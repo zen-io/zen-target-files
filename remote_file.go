@@ -10,34 +10,46 @@ import (
 	"time"
 
 	"github.com/schollz/progressbar/v3"
-	archiving "github.com/tiagoposse/ahoy-archiving"
-	ahoy_targets "gitlab.com/hidothealth/platform/ahoy/src/target"
-	"gitlab.com/hidothealth/platform/ahoy/src/utils"
+	zen_targets "github.com/zen-io/zen-core/target"
+	"github.com/zen-io/zen-core/utils"
+	archiving "github.com/zen-io/zen-target-archiving"
 )
 
 type RemoteFileConfig struct {
-	ahoy_targets.BaseFields `mapstructure:",squash"`
-	Url                     string            `mapstructure:"url"`
-	Out                     *string           `mapstructure:"out"`
-	Hashes                  []string          `mapstructure:"hashes"`
-	Extract                 bool              `mapstructure:"extract"`
-	ExportedFiles           []string          `mapstructure:"exported_files"`
-	Username                string            `mapstructure:"username"`
-	Password                string            `mapstructure:"password"`
-	Headers                 map[string]string `mapstructure:"headers"`
-	Binary                  bool              `mapstructure:"binary"`
+	Name          string            `mapstructure:"name" desc:"Name for the target"`
+	Description   string            `mapstructure:"desc" desc:"Target description"`
+	Labels        []string          `mapstructure:"labels" desc:"Labels to apply to the targets"`
+	Deps          []string          `mapstructure:"deps" desc:"Build dependencies"`
+	PassEnv       []string          `mapstructure:"pass_env" desc:"List of environment variable names that will be passed from the OS environment, they are part of the target hash"`
+	SecretEnv     []string          `mapstructure:"secret_env" desc:"List of environment variable names that will be passed from the OS environment, they are not used to calculate the target hash"`
+	Env           map[string]string `mapstructure:"env" desc:"Key-Value map of static environment variables to be used"`
+	Tools         map[string]string `mapstructure:"tools" desc:"Key-Value map of tools to include when executing this target. Values can be references"`
+	Visibility    []string          `mapstructure:"visibility" desc:"List of visibility for this target"`
+	Url           string            `mapstructure:"url"`
+	Out           *string           `mapstructure:"out"`
+	Hashes        []string          `mapstructure:"hashes"`
+	Extract       bool              `mapstructure:"extract"`
+	ExportedFiles []string          `mapstructure:"exported_files"`
+	Username      string            `mapstructure:"username"`
+	Password      string            `mapstructure:"password"`
+	Headers       map[string]string `mapstructure:"headers"`
+	Binary        bool              `mapstructure:"binary"`
 }
 
-func (rfc RemoteFileConfig) GetTargets(tcc *ahoy_targets.TargetConfigContext) ([]*ahoy_targets.Target, error) {
+func (rfc RemoteFileConfig) GetTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
 	return rfc.ExportTargets(tcc)
 }
 
-func (rfc RemoteFileConfig) ExportTargets(tcc *ahoy_targets.TargetConfigContext) ([]*ahoy_targets.Target, error) {
+func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
 	if !rfc.Extract && len(rfc.ExportedFiles) > 0 {
 		return nil, fmt.Errorf("exported files does not work without extract")
 	}
 
-	rfc.Labels = append(rfc.Labels, fmt.Sprintf("url=%s", rfc.Url))
+	url, err := tcc.Interpolate(rfc.Url)
+	if err != nil {
+		return nil, err
+	}
+	rfc.Labels = append(rfc.Labels, fmt.Sprintf("url=%s", url))
 
 	var downloadLocation string
 	var extractOut *string
@@ -46,22 +58,22 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *ahoy_targets.TargetConfigContext)
 
 	if rfc.Extract {
 		var ext string
-		if strings.HasSuffix(rfc.Url, ".tar.gz") {
+		if strings.HasSuffix(url, ".tar.gz") {
 			ext = ".tar.gz"
 		} else {
-			ext = filepath.Ext(rfc.Url)
+			ext = filepath.Ext(url)
 		}
 
 		if len(rfc.ExportedFiles) == 0 {
 			if rfc.Out != nil {
 				extractOut = rfc.Out
 			} else {
-				extractOut = utils.StringPtr(strings.TrimSuffix(filepath.Base(rfc.Url), ext))
+				extractOut = utils.StringPtr(strings.TrimSuffix(filepath.Base(url), ext))
 			}
 			downloadLocation = "tmp_" + *extractOut + ext
 			rfc.ExportedFiles = []string{"**/*"}
 		} else {
-			downloadLocation = filepath.Base(rfc.Url)
+			downloadLocation = filepath.Base(url)
 		}
 
 		outs = []string{downloadLocation}
@@ -71,7 +83,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *ahoy_targets.TargetConfigContext)
 		if rfc.Out != nil {
 			rfc.ExportedFiles = []string{fmt.Sprintf("%s/**/*", *rfc.Out)}
 		}
-		downloadLocation = filepath.Base(rfc.Url)
+		downloadLocation = filepath.Base(url)
 		outs = []string{downloadLocation}
 	}
 
@@ -82,28 +94,29 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *ahoy_targets.TargetConfigContext)
 		stepName = rfc.Name
 	}
 
-	steps := []*ahoy_targets.Target{
-		ahoy_targets.NewTarget(
+	steps := []*zen_targets.Target{
+		zen_targets.NewTarget(
 			stepName,
-			ahoy_targets.WithLabels(rfc.Labels),
-			ahoy_targets.WithHashes(rfc.Hashes),
-			ahoy_targets.WithOuts(outs),
-			ahoy_targets.WithVisibility(rfc.Visibility),
-			ahoy_targets.WithTargetScript("build", &ahoy_targets.TargetScript{
+			zen_targets.WithLabels(rfc.Labels),
+			zen_targets.WithHashes(rfc.Hashes),
+			zen_targets.WithOuts(outs),
+			zen_targets.WithVisibility(rfc.Visibility),
+			zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
 				Deps: rfc.Deps,
-				Run: func(target *ahoy_targets.Target, runCtx *ahoy_targets.RuntimeContext) error {
-					var url string
-					for _, l := range target.Labels {
-						if strings.HasPrefix(l, "url=") {
-							if interpolatedUrl, err := target.Interpolate(strings.Split(l, "=")[1]); err != nil {
-								return fmt.Errorf("interpolating url: %w", err)
-							} else {
-								url = interpolatedUrl
-							}
-							break
-						}
-					}
+				Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
+					// var url string
+					// for _, l := range target.Labels {
+					// 	if strings.HasPrefix(l, "url=") {
+					// 		if interpolatedUrl, err := target.Interpolate(strings.Split(l, "=")[1]); err != nil {
+					// 			return fmt.Errorf("interpolating url: %w", err)
+					// 		} else {
+					// 			url = interpolatedUrl
+					// 		}
+					// 		break
+					// 	}
+					// }
 
+					target.Debugln("Download url: %s", url)
 					req, err := http.NewRequest("GET", url, nil)
 					if err != nil {
 						return err
@@ -162,7 +175,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *ahoy_targets.TargetConfigContext)
 
 	if rfc.Extract {
 		uc := archiving.UnarchiveConfig{
-			BaseFields: ahoy_targets.BaseFields{
+			BaseFields: zen_targets.BaseFields{
 				Name:       fmt.Sprintf(rfc.Name),
 				Visibility: []string{":" + stepName},
 				Labels:     rfc.Labels,

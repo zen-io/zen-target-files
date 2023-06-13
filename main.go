@@ -1,10 +1,10 @@
 package files
 
 import (
-	ahoy_targets "gitlab.com/hidothealth/platform/ahoy/src/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 )
 
-var KnownTargets = ahoy_targets.TargetCreatorMap{
+var KnownTargets = zen_targets.TargetCreatorMap{
 	"remote_file": RemoteFileConfig{},
 	"export_file": ExportFileConfig{},
 	"filegroup":   FilegroupConfig{},

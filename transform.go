@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	ahoy_targets "gitlab.com/hidothealth/platform/ahoy/src/target"
+	zen_targets "github.com/zen-io/zen-core/target"
 )
 
 type Replacement struct {
@@ -15,20 +15,28 @@ type Replacement struct {
 }
 
 type TransformConfig struct {
-	ahoy_targets.BaseFields `mapstructure:",squash"`
-	Src                     string        `mapstructure:"src"`
-	Out                     string        `mapstructure:"out"`
-	Replacements            []Replacement `mapstructure:"replacements"`
+	Name         string            `mapstructure:"name" desc:"Name for the target"`
+	Description  string            `mapstructure:"desc" desc:"Target description"`
+	Labels       []string          `mapstructure:"labels" desc:"Labels to apply to the targets"`
+	Deps         []string          `mapstructure:"deps" desc:"Build dependencies"`
+	PassEnv      []string          `mapstructure:"pass_env" desc:"List of environment variable names that will be passed from the OS environment, they are part of the target hash"`
+	SecretEnv    []string          `mapstructure:"secret_env" desc:"List of environment variable names that will be passed from the OS environment, they are not used to calculate the target hash"`
+	Env          map[string]string `mapstructure:"env" desc:"Key-Value map of static environment variables to be used"`
+	Tools        map[string]string `mapstructure:"tools" desc:"Key-Value map of tools to include when executing this target. Values can be references"`
+	Visibility   []string          `mapstructure:"visibility" desc:"List of visibility for this target"`
+	Src          string            `mapstructure:"src"`
+	Out          string            `mapstructure:"out"`
+	Replacements []Replacement     `mapstructure:"replacements"`
 }
 
-func (tc TransformConfig) GetTargets(_ *ahoy_targets.TargetConfigContext) ([]*ahoy_targets.Target, error) {
-	opts := []ahoy_targets.TargetOption{
-		ahoy_targets.WithSrcs(map[string][]string{"src": {tc.Src}}),
-		ahoy_targets.WithOuts([]string{tc.Out}),
-		ahoy_targets.WithVisibility(tc.Visibility),
-		ahoy_targets.WithTargetScript("build", &ahoy_targets.TargetScript{
+func (tc TransformConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
+	opts := []zen_targets.TargetOption{
+		zen_targets.WithSrcs(map[string][]string{"src": {tc.Src}}),
+		zen_targets.WithOuts([]string{tc.Out}),
+		zen_targets.WithVisibility(tc.Visibility),
+		zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
 			Deps: tc.Deps,
-			Run: func(target *ahoy_targets.Target, runCtx *ahoy_targets.RuntimeContext) error {
+			Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
 				data, err := ioutil.ReadFile(target.Srcs["src"][0])
 				if err != nil {
 					return err
@@ -54,8 +62,8 @@ func (tc TransformConfig) GetTargets(_ *ahoy_targets.TargetConfigContext) ([]*ah
 		}),
 	}
 
-	return []*ahoy_targets.Target{
-		ahoy_targets.NewTarget(
+	return []*zen_targets.Target{
+		zen_targets.NewTarget(
 			tc.Name,
 			opts...,
 		),
