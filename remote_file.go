@@ -49,77 +49,79 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 	if err != nil {
 		return nil, err
 	}
+	urlExt := utils.FileExtension(url)
+
 	rfc.Labels = append(rfc.Labels, fmt.Sprintf("url=%s", url))
 
-	var downloadLocation string
-	var extractOut *string
+	var mainStepName, downloadLocation string
 
-	var outs []string
-
+	steps := make([]*zen_targets.Target, 0)
 	if rfc.Extract {
-		var ext string
-		if strings.HasSuffix(url, ".tar.gz") {
-			ext = ".tar.gz"
+		mainStepName = fmt.Sprintf("%s_download", rfc.Name)
+		mainStepRef := fmt.Sprintf(":%s", mainStepName)
+		var outs []string
+		if len(rfc.ExportedFiles) > 0 {
+			outs = rfc.ExportedFiles
 		} else {
-			ext = filepath.Ext(url)
+			outs = []string{"**/*"}
 		}
 
-		if len(rfc.ExportedFiles) == 0 {
-			if rfc.Out != nil {
-				extractOut = rfc.Out
-			} else {
-				extractOut = utils.StringPtr(strings.TrimSuffix(filepath.Base(url), ext))
-			}
-			downloadLocation = "tmp_" + *extractOut + ext
-			rfc.ExportedFiles = []string{"**/*"}
+		if unarchTarget, err := (archiving.UnarchiveConfig{
+			Name:          rfc.Name,
+			Visibility:    []string{mainStepRef},
+			Labels:        rfc.Labels,
+			Deps:          []string{mainStepRef},
+			Src:           mainStepRef,
+			ExportedFiles: outs,
+			Binary:        rfc.Binary,
+		}).GetTargets(tcc); err != nil {
+			return nil, err
 		} else {
-			downloadLocation = filepath.Base(url)
+			steps = append(steps, unarchTarget...)
 		}
 
-		outs = []string{downloadLocation}
-	} else if len(rfc.ExportedFiles) > 0 {
-		outs = rfc.ExportedFiles
+		downloadLocation = "download" + urlExt
 	} else {
+		mainStepName = rfc.Name
+
 		if rfc.Out != nil {
-			rfc.ExportedFiles = []string{fmt.Sprintf("%s/**/*", *rfc.Out)}
+			downloadLocation = *rfc.Out
+		} else {
+			downloadLocation = filepath.Base(strings.TrimSuffix(url, urlExt))
 		}
-		downloadLocation = filepath.Base(url)
-		outs = []string{downloadLocation}
 	}
 
-	var stepName string
-	if rfc.Extract {
-		stepName = fmt.Sprintf("%s_download", rfc.Name)
-	} else {
-		stepName = rfc.Name
-	}
-
-	steps := []*zen_targets.Target{
+	steps = append(steps,
 		zen_targets.NewTarget(
-			stepName,
+			mainStepName,
 			zen_targets.WithLabels(rfc.Labels),
 			zen_targets.WithHashes(rfc.Hashes),
-			zen_targets.WithOuts(outs),
+			zen_targets.WithOuts([]string{downloadLocation}),
+			zen_targets.WithPassEnv(rfc.PassEnv),
+			zen_targets.WithSecretEnvVars(rfc.SecretEnv),
 			zen_targets.WithVisibility(rfc.Visibility),
 			zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
 				Deps: rfc.Deps,
 				Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
-					// var url string
-					// for _, l := range target.Labels {
-					// 	if strings.HasPrefix(l, "url=") {
-					// 		if interpolatedUrl, err := target.Interpolate(strings.Split(l, "=")[1]); err != nil {
-					// 			return fmt.Errorf("interpolating url: %w", err)
-					// 		} else {
-					// 			url = interpolatedUrl
-					// 		}
-					// 		break
-					// 	}
-					// }
+					var interpolatedDownload string
+					if id, err := target.Interpolate(target.Outs[0]); err != nil {
+						return fmt.Errorf("interpolating url: %w", err)
+					} else {
+						interpolatedDownload = filepath.Join(target.Cwd, id)
+					}
 
-					target.Debugln("Download url: %s", url)
+					target.Debugln("Download url: %s to %s", url, interpolatedDownload)
 					req, err := http.NewRequest("GET", url, nil)
 					if err != nil {
 						return err
+					}
+
+					for k, v := range rfc.Headers {
+						interpolHeaderVal, err := target.Interpolate(v)
+						if err != nil {
+							return fmt.Errorf("interpolating header %s: %w", k, err)
+						}
+						req.Header.Add(k, interpolHeaderVal)
 					}
 					resp, err := http.DefaultClient.Do(req)
 					if err != nil {
@@ -127,14 +129,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 					}
 					defer resp.Body.Close()
 
-					var interpolatedDownload string
-					if id, err := target.Interpolate(downloadLocation); err != nil {
-						return fmt.Errorf("interpolating url: %w", err)
-					} else {
-						interpolatedDownload = id
-					}
-
-					f, err := os.OpenFile(filepath.Join(target.Cwd, interpolatedDownload), os.O_CREATE|os.O_WRONLY, 0644)
+					f, err := os.OpenFile(interpolatedDownload, os.O_CREATE|os.O_WRONLY, 0644)
 					if err != nil {
 						return err
 					}
@@ -171,27 +166,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 				},
 			}),
 		),
-	}
-
-	if rfc.Extract {
-		uc := archiving.UnarchiveConfig{
-			BaseFields: zen_targets.BaseFields{
-				Name:       fmt.Sprintf(rfc.Name),
-				Visibility: []string{":" + stepName},
-				Labels:     rfc.Labels,
-				Deps:       []string{fmt.Sprintf(":%s_download", rfc.Name)},
-			},
-			Src:           fmt.Sprintf(":%s_download", rfc.Name),
-			ExportedFiles: rfc.ExportedFiles,
-			Out:           extractOut,
-			Binary:        rfc.Binary,
-		}
-		if unarchTarget, err := uc.GetTargets(tcc); err != nil {
-			return nil, err
-		} else {
-			steps = append(steps, unarchTarget...)
-		}
-	}
+	)
 
 	return steps, nil
 }

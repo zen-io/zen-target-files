@@ -15,10 +15,8 @@ import (
 
 func TestExportFile(t *testing.T) {
 	ef := &ExportFileConfig{
-		BaseFields: zen_targets.BaseFields{
-			Name: "test",
-		},
-		Src: "test_src",
+		Name: "test",
+		Src:  "test_src",
 	}
 
 	targets, err := ef.GetTargets(nil)

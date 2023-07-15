@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	zen_mock "github.com/zen-io/zen-core/mock"
-	zen_target "github.com/zen-io/zen-core/target"
 	"gotest.tools/v3/assert"
 )
 
@@ -31,10 +30,8 @@ var MockSrcs = zen_mock.MockSrcsDef{
 
 func TestFilegroupSimple(t *testing.T) {
 	fc := &FilegroupConfig{
-		BuildFields: zen_target.BuildFields{
-			Name: "test",
-			Srcs: []string{"deep/nested/folder/*"},
-		},
+		Name:            "test",
+		Srcs:            []string{"deep/nested/folder/*"},
 		Flatten:         true,
 		NoInterpolation: true,
 	}

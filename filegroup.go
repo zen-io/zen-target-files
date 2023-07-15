@@ -1,6 +1,8 @@
 package files
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -22,15 +24,25 @@ type FilegroupConfig struct {
 	Outs            []string          `mapstructure:"outs" desc:"Outs for the build"`
 	NoInterpolation bool              `mapstructure:"no_interpolation"`
 	Flatten         bool              `mapstructure:"flatten"`
+	UnderPath       *string           `mapstructure:"under_path"`
 }
 
 func (fgc FilegroupConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
+
 	var outs []string
-	if fgc.Flatten {
-		outs = []string{"*"}
+	if fgc.UnderPath != nil {
+		outs = []string{*fgc.UnderPath}
 	} else {
-		outs = fgc.Srcs
+		base_out_path := ""
+		if fgc.Flatten {
+			outs = []string{"*"}
+		} else {
+			for _, out := range fgc.Outs {
+				outs = append(outs, fmt.Sprintf("%s%s", base_out_path, out))
+			}
+		}
 	}
+
 	opts := []zen_targets.TargetOption{
 		zen_targets.WithSrcs(map[string][]string{"src": fgc.Srcs}),
 		zen_targets.WithOuts(outs),
@@ -38,18 +50,19 @@ func (fgc FilegroupConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*ze
 		zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
 			Deps: fgc.Deps,
 			Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
-				if fgc.Flatten {
-					target.Traceln("flattening srcs of %s", target.Qn())
-					for _, src := range target.Srcs["src"] {
-						to := filepath.Join(target.Cwd, filepath.Base(strings.TrimPrefix(src, target.Cwd)))
+				if fgc.UnderPath != nil {
+					os.MkdirAll(*fgc.UnderPath, os.ModePerm)
+				}
 
-						if target.ShouldInterpolate() {
-							if err := utils.CopyWithInterpolate(src, to, target.EnvVars()); err != nil {
-								return err
-							}
-						} else if err := utils.CopyFile(src, to); err != nil {
+				for _, src := range target.Srcs["src"] {
+					to := transformPath(strings.TrimPrefix(src, target.Cwd), fgc.UnderPath, target.Cwd, fgc.Flatten)
+
+					if target.ShouldInterpolate() {
+						if err := utils.CopyWithInterpolate(src, to, target.EnvVars()); err != nil {
 							return err
 						}
+					} else if err := utils.CopyFile(src, to); err != nil {
+						return err
 					}
 				}
 
@@ -72,4 +85,16 @@ func (fgc FilegroupConfig) GetTargets(_ *zen_targets.TargetConfigContext) ([]*ze
 			opts...,
 		),
 	}, nil
+}
+
+func transformPath(p string, base_out_path *string, root string, flatten bool) string {
+	if base_out_path != nil {
+		root = filepath.Join(root, *base_out_path)
+	}
+
+	if flatten {
+		return filepath.Join(root, filepath.Base(p))
+	} else {
+		return filepath.Join(root, p)
+	}
 }
