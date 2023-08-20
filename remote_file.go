@@ -17,14 +17,14 @@ import (
 
 type RemoteFileConfig struct {
 	Name          string            `mapstructure:"name" desc:"Name for the target"`
-	Description   string            `mapstructure:"desc" desc:"Target description"`
-	Labels        []string          `mapstructure:"labels" desc:"Labels to apply to the targets"`
-	Deps          []string          `mapstructure:"deps" desc:"Build dependencies"`
-	PassEnv       []string          `mapstructure:"pass_env" desc:"List of environment variable names that will be passed from the OS environment, they are part of the target hash"`
-	SecretEnv     []string          `mapstructure:"secret_env" desc:"List of environment variable names that will be passed from the OS environment, they are not used to calculate the target hash"`
-	Env           map[string]string `mapstructure:"env" desc:"Key-Value map of static environment variables to be used"`
-	Tools         map[string]string `mapstructure:"tools" desc:"Key-Value map of tools to include when executing this target. Values can be references"`
-	Visibility    []string          `mapstructure:"visibility" desc:"List of visibility for this target"`
+	Description   string            `mapstructure:"desc" zen:"yes" desc:"Target description"`
+	Labels        []string          `mapstructure:"labels" zen:"yes" desc:"Labels to apply to the targets"`
+	Deps          []string          `mapstructure:"deps" zen:"yes" desc:"Build dependencies"`
+	PassEnv       []string          `mapstructure:"pass_env" zen:"yes" desc:"List of environment variable names that will be passed from the OS environment, they are part of the target hash"`
+	PassSecretEnv []string          `mapstructure:"secret_env" zen:"yes" desc:"List of environment variable names that will be passed from the OS environment, they are not used to calculate the target hash"`
+	Env           map[string]string `mapstructure:"env" zen:"yes" desc:"Key-Value map of static environment variables to be used"`
+	Tools         map[string]string `mapstructure:"tools" zen:"yes" desc:"Key-Value map of tools to include when executing this target. Values can be references"`
+	Visibility    []string          `mapstructure:"visibility" zen:"yes" desc:"List of visibility for this target"`
 	Url           string            `mapstructure:"url"`
 	Out           *string           `mapstructure:"out"`
 	Hashes        []string          `mapstructure:"hashes"`
@@ -36,11 +36,11 @@ type RemoteFileConfig struct {
 	Binary        bool              `mapstructure:"binary"`
 }
 
-func (rfc RemoteFileConfig) GetTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
+func (rfc RemoteFileConfig) GetTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.TargetBuilder, error) {
 	return rfc.ExportTargets(tcc)
 }
 
-func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.Target, error) {
+func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) ([]*zen_targets.TargetBuilder, error) {
 	if !rfc.Extract && len(rfc.ExportedFiles) > 0 {
 		return nil, fmt.Errorf("exported files does not work without extract")
 	}
@@ -55,7 +55,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 
 	var mainStepName, downloadLocation string
 
-	steps := make([]*zen_targets.Target, 0)
+	steps := make([]*zen_targets.TargetBuilder, 0)
 	if rfc.Extract {
 		mainStepName = fmt.Sprintf("%s_download", rfc.Name)
 		mainStepRef := fmt.Sprintf(":%s", mainStepName)
@@ -65,6 +65,15 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 		} else {
 			outs = []string{"**/*"}
 		}
+		
+		exported_outs := make([]string, 0)
+		for _, o := range outs {
+			expout, err := tcc.Interpolate(o)
+			if err != nil {
+				return nil, fmt.Errorf("interpolating out %s: %w", o, err)
+			}
+			exported_outs = append(exported_outs, expout)
+		}
 
 		if unarchTarget, err := (archiving.UnarchiveConfig{
 			Name:          rfc.Name,
@@ -72,7 +81,7 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 			Labels:        rfc.Labels,
 			Deps:          []string{mainStepRef},
 			Src:           mainStepRef,
-			ExportedFiles: outs,
+			ExportedFiles: exported_outs,
 			Binary:        rfc.Binary,
 		}).GetTargets(tcc); err != nil {
 			return nil, err
@@ -91,82 +100,75 @@ func (rfc RemoteFileConfig) ExportTargets(tcc *zen_targets.TargetConfigContext) 
 		}
 	}
 
-	steps = append(steps,
-		zen_targets.NewTarget(
-			mainStepName,
-			zen_targets.WithLabels(rfc.Labels),
-			zen_targets.WithHashes(rfc.Hashes),
-			zen_targets.WithOuts([]string{downloadLocation}),
-			zen_targets.WithPassEnv(rfc.PassEnv),
-			zen_targets.WithSecretEnvVars(rfc.SecretEnv),
-			zen_targets.WithVisibility(rfc.Visibility),
-			zen_targets.WithTargetScript("build", &zen_targets.TargetScript{
-				Deps: rfc.Deps,
-				Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
-					var interpolatedDownload string
-					if id, err := target.Interpolate(target.Outs[0]); err != nil {
-						return fmt.Errorf("interpolating url: %w", err)
-					} else {
-						interpolatedDownload = filepath.Join(target.Cwd, id)
-					}
+	tb := zen_targets.ToTarget(rfc)
+	tb.Name = mainStepName
+	tb.Outs = []string{downloadLocation}
+	tb.Scripts["build"] = &zen_targets.TargetBuilderScript{
+		Deps: rfc.Deps,
+		Run: func(target *zen_targets.Target, runCtx *zen_targets.RuntimeContext) error {
+			var interpolatedDownload string
+			if id, err := target.Interpolate(target.Outs[0]); err != nil {
+				return fmt.Errorf("interpolating url: %w", err)
+			} else {
+				interpolatedDownload = filepath.Join(target.Cwd, id)
+			}
 
-					target.Debugln("Download url: %s to %s", url, interpolatedDownload)
-					req, err := http.NewRequest("GET", url, nil)
-					if err != nil {
+			target.Debugln("Download url: %s to %s", url, interpolatedDownload)
+			req, err := http.NewRequest("GET", url, nil)
+			if err != nil {
+				return err
+			}
+
+			for k, v := range rfc.Headers {
+				interpolHeaderVal, err := target.Interpolate(v)
+				if err != nil {
+					return fmt.Errorf("interpolating header %s: %w", k, err)
+				}
+				req.Header.Add(k, interpolHeaderVal)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return err
+			}
+			defer resp.Body.Close()
+
+			f, err := os.OpenFile(interpolatedDownload, os.O_CREATE|os.O_WRONLY, 0644)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			bar := progressbar.NewOptions64(
+				resp.ContentLength,
+				progressbar.OptionSetDescription("Downloading..."),
+				progressbar.OptionSetWriter(target),
+				progressbar.OptionShowBytes(true),
+				progressbar.OptionSetWidth(10),
+				progressbar.OptionThrottle(100*time.Millisecond),
+				progressbar.OptionShowCount(),
+				// progressbar.OptionOnCompletion(func() {
+				// 	ctx.Out.Write([]byte(fmt.Sprintf("Finished Downloading %s", rfc.Out)))
+				// }),
+				progressbar.OptionSpinnerType(14),
+				progressbar.OptionFullWidth(),
+			)
+
+			if _, err := io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
+				return err
+			}
+
+			if rfc.Binary && !rfc.Extract {
+				for _, o := range target.Outs {
+					if err := os.Chmod(filepath.Join(target.Cwd, o), 0755); err != nil {
 						return err
 					}
+				}
+			}
 
-					for k, v := range rfc.Headers {
-						interpolHeaderVal, err := target.Interpolate(v)
-						if err != nil {
-							return fmt.Errorf("interpolating header %s: %w", k, err)
-						}
-						req.Header.Add(k, interpolHeaderVal)
-					}
-					resp, err := http.DefaultClient.Do(req)
-					if err != nil {
-						return err
-					}
-					defer resp.Body.Close()
-
-					f, err := os.OpenFile(interpolatedDownload, os.O_CREATE|os.O_WRONLY, 0644)
-					if err != nil {
-						return err
-					}
-					defer f.Close()
-
-					bar := progressbar.NewOptions64(
-						resp.ContentLength,
-						progressbar.OptionSetDescription("Downloading..."),
-						progressbar.OptionSetWriter(target),
-						progressbar.OptionShowBytes(true),
-						progressbar.OptionSetWidth(10),
-						progressbar.OptionThrottle(100*time.Millisecond),
-						progressbar.OptionShowCount(),
-						// progressbar.OptionOnCompletion(func() {
-						// 	ctx.Out.Write([]byte(fmt.Sprintf("Finished Downloading %s", rfc.Out)))
-						// }),
-						progressbar.OptionSpinnerType(14),
-						progressbar.OptionFullWidth(),
-					)
-
-					if _, err := io.Copy(io.MultiWriter(f, bar), resp.Body); err != nil {
-						return err
-					}
-
-					if rfc.Binary && !rfc.Extract {
-						for _, o := range target.Outs {
-							if err := os.Chmod(filepath.Join(target.Cwd, o), 0755); err != nil {
-								return err
-							}
-						}
-					}
-
-					return nil
-				},
-			}),
-		),
-	)
+			return nil
+		},
+	}
+	steps = append(steps, tb)
 
 	return steps, nil
 }
